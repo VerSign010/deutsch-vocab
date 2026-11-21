@@ -58,26 +58,50 @@ export async function onRequestPost(context) {
   }
 }
 
-async function callGemini(apiKey, model, prompt) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        responseMimeType: 'application/json',
-        temperature: 0.2,
-      },
-    }),
-  });
+async function callGemini(apiKey, modelConfig, prompt) {
+  const models = String(modelConfig || 'gemini-3.8-flash')
+    .split(',')
+    .map((m) => m.trim())
+    .filter(Boolean);
 
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data?.error?.message || `Gemini API 错误 (${res.status})`);
+  let lastError = null;
+
+  for (const model of models) {
+    // 每个模型遇到 503/429 拥堵时最多尝试 2 次
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.2,
+          },
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        return safeParseJson(rawText);
+      }
+
+      const msg = data?.error?.message || `Gemini API 错误 (${res.status})`;
+      lastError = new Error(`[${model}] ${msg}`);
+
+      // 如果是 503 拥堵或 429 限流，短暂等待后重试或切换下一个模型
+      if (res.status === 503 || res.status === 429) {
+        await new Promise((r) => setTimeout(r, 900));
+        continue;
+      }
+      // 如果是模型名不存在(404)或Key错误(400/403)，直接跳出当前模型尝试下一个
+      break;
+    }
   }
-  const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  return safeParseJson(rawText);
+
+  throw lastError || new Error('所有备用模型均暂时不可用，请稍后再试');
 }
 
 async function callOpenAICompatible(baseUrl, apiKey, model, prompt) {
