@@ -1,6 +1,8 @@
 export async function onRequestPost(context) {
-  const { request, env } = context;
+  return handleAnalyze(context.request, context.env);
+}
 
+async function handleAnalyze(request, env) {
   try {
     const body = await request.json().catch(() => ({}));
     const text = String(body.text || '').trim();
@@ -12,7 +14,7 @@ export async function onRequestPost(context) {
       return jsonResponse({ error: '单次输入请控制在 2500 字符以内' }, 400);
     }
 
-    // 1. 可选：如果配置了 Cloudflare KV (绑定名为 VOCAB_CACHE)，优先读取缓存
+    // 可选 KV 缓存
     let cacheKey = null;
     if (env.VOCAB_CACHE) {
       cacheKey = `v1:${await sha256(text)}`;
@@ -22,9 +24,9 @@ export async function onRequestPost(context) {
       }
     }
 
-    // 2. 读取环境变量配置（默认优先支持 Gemini 免费版，也支持 OpenAI 兼容接口）
-    const provider = (env.AI_PROVIDER || 'gemini').toLowerCase();
-    const apiKey = env.AI_API_KEY;
+    // 默认走 OpenAI 兼容模式（Groq）
+    const provider = (env.AI_PROVIDER || 'openai').toLowerCase().trim();
+    const apiKey = (env.AI_API_KEY || '').trim();
 
     if (!apiKey) {
       return jsonResponse(
@@ -37,15 +39,13 @@ export async function onRequestPost(context) {
     let resultData;
 
     if (provider === 'gemini') {
-      const model = env.AI_MODEL || 'gemini-2.5-flash';
+      const model = env.AI_MODEL || 'gemini-3.8-flash';
       resultData = await callGemini(apiKey, model, prompt);
     } else {
-      const baseUrl = (env.AI_BASE_URL || 'https://api.deepseek.com/v1').replace(/\/+$/, '');
-      const model = env.AI_MODEL || 'deepseek-chat';
-      resultData = await callOpenAICompatible(baseUrl, apiKey, model, prompt);
+      const baseUrl = (env.AI_BASE_URL || 'https://api.groq.com/openai/v1').trim().replace(/\/+$/, '');
+      resultData = await callOpenAICompatible(baseUrl, apiKey, env.AI_MODEL, prompt);
     }
 
-    // 3. 写入 KV 缓存（保存 30 天）
     if (env.VOCAB_CACHE && cacheKey && Array.isArray(resultData?.words)) {
       await env.VOCAB_CACHE.put(cacheKey, JSON.stringify(resultData), {
         expirationTtl: 60 * 60 * 24 * 30,
@@ -58,6 +58,125 @@ export async function onRequestPost(context) {
   }
 }
 
+async function callOpenAICompatible(baseUrl, apiKey, modelConfig, prompt) {
+  const configuredModels = String(modelConfig || '')
+    .split(',')
+    .map((m) => m.trim())
+    .filter((m) => m && m.toLowerCase() !== 'auto');
+
+  let lastError = null;
+
+  // 1. 先尝试环境变量里指定的模型
+  for (const model of configuredModels) {
+    try {
+      return await requestOpenAIChat(baseUrl, apiKey, model, prompt, true);
+    } catch (err) {
+      if (err.status === 401 || err.status === 403) {
+        throw err; // Key 无效，直接报错
+      }
+      lastError = err;
+    }
+  }
+
+  // 2. 如果未指定模型，或指定模型已下线/无权限，自动查询账号当前可用的欧美模型
+  try {
+    const autoModels = await discoverAvailableNonChinaModels(baseUrl, apiKey);
+    for (const model of autoModels) {
+      if (configuredModels.includes(model)) continue;
+      try {
+        return await requestOpenAIChat(baseUrl, apiKey, model, prompt, true);
+      } catch (err) {
+        if (err.status === 401 || err.status === 403) {
+          throw err;
+        }
+        lastError = err;
+      }
+    }
+  } catch (discoverErr) {
+    if (!lastError) lastError = discoverErr;
+  }
+
+  throw lastError || new Error('没有找到可用的模型，请检查 AI_API_KEY 或平台权限');
+}
+
+async function requestOpenAIChat(baseUrl, apiKey, model, prompt, useJsonMode) {
+  const payload = {
+    model,
+    temperature: 0.2,
+    messages: [
+      { role: 'system', content: '你是一位专业的德语词典编辑与德语教师，只输出严格合法的 JSON，不要输出多余解释。' },
+      { role: 'user', content: prompt },
+    ],
+  };
+
+  if (useJsonMode) {
+    payload.response_format = { type: 'json_object' };
+  }
+
+  const res = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = data?.error?.message || `模型接口错误 (${res.status})`;
+    // 部分模型不支持 response_format: json_object，自动去掉该参数重试一次
+    if (useJsonMode && res.status === 400 && /response_format|json/i.test(msg)) {
+      return requestOpenAIChat(baseUrl, apiKey, model, prompt, false);
+    }
+    const err = new Error(`[${model}] ${msg}`);
+    err.status = res.status;
+    throw err;
+  }
+
+  const rawText = data?.choices?.[0]?.message?.content || '';
+  const parsed = safeParseJson(rawText);
+  if (!Array.isArray(parsed?.words)) {
+    throw new Error(`[${model}] 返回格式缺少 words 数组`);
+  }
+  return parsed;
+}
+
+async function discoverAvailableNonChinaModels(baseUrl, apiKey) {
+  const res = await fetch(`${baseUrl}/models`, {
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+    },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !Array.isArray(data?.data)) {
+    throw new Error(data?.error?.message || `获取可用模型列表失败 (${res.status})`);
+  }
+
+  // 过滤掉非文本对话模型（语音/识别/安全审核）及中国大陆模型
+  const nonTextRegex = /whisper|distil-whisper|playai|tts|orpheus|audio|speech|guard|safeguard|embed|rerank|moderation|dall-e|imagen|flux|realtime|transcribe/i;
+  const mainlandChinaRegex = /qwen|deepseek|moonshot|kimi|glm|chatglm|yi-|baichuan|minimax|doubao|hunyuan|ernie|stepfun/i;
+
+  const candidates = data.data
+    .filter((m) => m && m.id && m.active !== false)
+    .map((m) => m.id)
+    .filter((id) => !nonTextRegex.test(id) && !mainlandChinaRegex.test(id));
+
+  // 按德语理解与指令遵循能力优先排序
+  const scoreModel = (id) => {
+    let score = 0;
+    if (/gpt-oss-120b|llama-4|llama-3\.3-70b|mistral-large/i.test(id)) score += 100;
+    if (/70b|90b|120b|maverick|versatile/i.test(id)) score += 80;
+    if (/gpt-oss|llama-3|scout|mistral|gemma/i.test(id)) score += 60;
+    if (/8b|instant|mini|nano|1b|3b/i.test(id)) score -= 20;
+    return score;
+  };
+
+  candidates.sort((a, b) => scoreModel(b) - scoreModel(a));
+  return candidates.slice(0, 5);
+}
+
 async function callGemini(apiKey, modelConfig, prompt) {
   const models = String(modelConfig || 'gemini-3.8-flash')
     .split(',')
@@ -65,9 +184,7 @@ async function callGemini(apiKey, modelConfig, prompt) {
     .filter(Boolean);
 
   let lastError = null;
-
   for (const model of models) {
-    // 每个模型遇到 503/429 拥堵时最多尝试 2 次
     for (let attempt = 1; attempt <= 2; attempt++) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
       const res = await fetch(url, {
@@ -75,59 +192,24 @@ async function callGemini(apiKey, modelConfig, prompt) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            responseMimeType: 'application/json',
-            temperature: 0.2,
-          },
+          generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
         }),
       });
-
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
         return safeParseJson(rawText);
       }
-
       const msg = data?.error?.message || `Gemini API 错误 (${res.status})`;
       lastError = new Error(`[${model}] ${msg}`);
-
-      // 如果是 503 拥堵或 429 限流，短暂等待后重试或切换下一个模型
       if (res.status === 503 || res.status === 429) {
         await new Promise((r) => setTimeout(r, 900));
         continue;
       }
-      // 如果是模型名不存在(404)或Key错误(400/403)，直接跳出当前模型尝试下一个
       break;
     }
   }
-
-  throw lastError || new Error('所有备用模型均暂时不可用，请稍后再试');
-}
-
-async function callOpenAICompatible(baseUrl, apiKey, model, prompt) {
-  const res = await fetch(`${baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      temperature: 0.2,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: '你是一位专业的德语词典编辑与德语教师，只输出严格合法的 JSON。' },
-        { role: 'user', content: prompt },
-      ],
-    }),
-  });
-
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data?.error?.message || `模型接口错误 (${res.status})`);
-  }
-  const rawText = data?.choices?.[0]?.message?.content || '';
-  return safeParseJson(rawText);
+  throw lastError || new Error('Gemini 暂时不可用');
 }
 
 function buildPrompt(text) {
@@ -162,10 +244,11 @@ ${text}
 }
 
 function safeParseJson(rawText) {
-  const cleaned = rawText.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+  const withoutThink = String(rawText || '').replace(/<think>[\s\S]*?<\/think>/gi, '');
+  const cleaned = withoutThink.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
-  if (start === -1 || end === -1) {
+  if (start === -1 || end === -1 || end < start) {
     throw new Error('未能从模型响应中解析出 JSON');
   }
   return JSON.parse(cleaned.slice(start, end + 1));
