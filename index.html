@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DeutschLens · 德语段落词汇助手</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#eef2ff',
+              100: '#e0e7ff',
+              500: '#6366f1',
+              600: '#4f46e5',
+              700: '#4338ca',
+            }
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    /* 自定义滚动条，提升桌面端体验 */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.4); border-radius: 9999px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.7); }
+    @keyframes flashHighlight {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0); }
+      30% { box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.45); }
+    }
+    .card-flash { animation: flashHighlight 1.4s ease-out; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-100 min-h-screen flex flex-col transition-colors duration-200">
+
+  <!-- 顶部导航栏 -->
+  <header class="sticky top-0 z-30 bg-white/85 dark:bg-slate-900/85 backdrop-blur-md border-b border-slate-200/80 dark:border-slate-800">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
+      <div class="flex items-center gap-2.5">
+        <div class="w-8 h-8 rounded-xl bg-gradient-to-br from-slate-900 via-rose-600 to-amber-400 flex items-center justify-center text-white font-bold text-sm shadow-sm">
+          DE
+        </div>
+        <div>
+          <h1 class="font-bold text-base sm:text-lg tracking-tight leading-none">DeutschLens</h1>
+          <p class="text-[11px] text-slate-500 dark:text-slate-400 hidden sm:block mt-0.5">德语语境生词提取 · 搭配 · 分级学习</p>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <!-- 生词本按钮 -->
+        <button id="openVocabBookBtn" class="relative inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 transition">
+          <span>⭐</span>
+          <span class="hidden sm:inline">生词本</span>
+          <span id="vocabCountBadge" class="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 text-xs font-semibold rounded-full bg-brand-600 text-white">0</span>
+        </button>
+
+        <!-- API 设置按钮（用于 GitHub Pages 纯静态模式或自定义 Key） -->
+        <button id="openSettingsBtn" title="接口设置" class="p-2 rounded-lg text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 transition">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+        </button>
+
+        <!-- 深色模式切换 -->
+        <button id="themeToggleBtn" title="切换深浅色主题" class="p-2 rounded-lg text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 transition">
+          <span id="themeIcon">🌙</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 主体内容区：桌面端左右分栏，手机端上下布局 -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-5 lg:py-7">
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+
+      <!-- 左侧：德语输入与阅读区 -->
+      <section class="lg:col-span-5 lg:sticky lg:top-20 space-y-4">
+        <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200/80 dark:border-slate-800 p-4 sm:p-5">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="font-semibold text-sm sm:text-base flex items-center gap-2">
+              <span>📖 德语段落</span>
+              <span id="charCount" class="text-xs font-normal text-slate-400">0 / 2500 字</span>
+            </h2>
+            <div class="flex items-center gap-2 text-xs">
+              <button id="toggleReaderModeBtn" class="hidden px-2.5 py-1 rounded-md bg-brand-50 text-brand-600 dark:bg-brand-500/15 dark:text-brand-100 font-medium hover:opacity-80 transition">
+                ✏️ 返回编辑
+              </button>
+              <button id="sampleTextBtn" class="px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 transition">
+                填入示例
+              </button>
+              <button id="clearTextBtn" class="px-2.5 py-1 rounded-md text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition">
+                清空
+              </button>
+            </div>
+          </div>
+
+          <!-- 文本输入框 -->
+          <textarea
+            id="germanInput"
+            rows="8"
+            maxlength="2500"
+            placeholder="请在此粘贴一段德语文章、新闻或对话内容...&#10;例如：Der Einfluss der digitalen Medien auf unseren Alltag wächst ständig."
+            class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-950/70 p-3.5 text-sm sm:text-base leading-relaxed focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent resize-y transition"
+          ></textarea>
+
+          <!-- 互动阅读高亮视图（分析完成后可切换显示） -->
+          <div
+            id="readerView"
+            class="hidden w-full min-h-[190px] max-h-[380px] overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-950/70 p-3.5 text-sm sm:text-base leading-loose"
+          ></div>
+
+          <!-- 主操作按钮：【学习词汇】 -->
+          <div class="mt-4 flex flex-col sm:flex-row gap-2.5">
+            <button
+              id="analyzeBtn"
+              class="flex-1 inline-flex items-center justify-center gap-2 py-3 px-5 rounded-xl bg-brand-600 hover:bg-brand-700 active:scale-[0.99] text-white font-semibold text-sm sm:text-base shadow-sm shadow-brand-500/20 transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <span id="analyzeBtnIcon">✨</span>
+              <span id="analyzeBtnText">学习词汇</span>
+            </button>
+          </div>
+
+          <!-- 错误提示区 -->
+          <div id="errorBox" class="hidden mt-3 p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/60 text-rose-700 dark:text-rose-300 text-xs sm:text-sm"></div>
+        </div>
+
+        <!-- 名词词性图例小贴士 -->
+        <div class="hidden lg:flex items-center justify-between px-4 py-2.5 rounded-xl bg-white/70 dark:bg-slate-900/60 border border-slate-200/70 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400">
+          <span>词性颜色提示：</span>
+          <div class="flex items-center gap-3">
+            <span class="flex items-center gap-1"><i class="w-2 h-2 rounded-full bg-blue-500"></i>der (阳性)</span>
+            <span class="flex items-center gap-1"><i class="w-2 h-2 rounded-full bg-rose-500"></i>die (阴性)</span>
+            <span class="flex items-center gap-1"><i class="w-2 h-2 rounded-full bg-emerald-500"></i>das (中性)</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 右侧：词汇水平筛选 + 生词卡片列表 -->
+      <section class="lg:col-span-7 space-y-4">
+        <!-- 吸顶【词汇水平】筛选控制栏 -->
+        <div class="sticky top-14 z-20 bg-slate-50/95 dark:bg-slate-950/95 backdrop-blur-sm py-2 -mx-1 px-1">
+          <div class="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200/80 dark:border-slate-800 p-3 sm:px-4 flex flex-wrap items-center justify-between gap-2.5">
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="text-xs sm:text-sm font-semibold text-slate-600 dark:text-slate-300 flex items-center gap-1">
+                🎯 词汇水平：
+              </span>
+              <div id="levelFilterGroup" class="flex items-center gap-1.5 flex-wrap">
+                <button data-level="ALL" class="level-btn px-3 py-1 rounded-full text-xs sm:text-sm font-medium transition bg-slate-900 text-white dark:bg-white dark:text-slate-900">
+                  全部
+                </button>
+                <button data-level="A1-A2" class="level-btn px-3 py-1 rounded-full text-xs sm:text-sm font-medium transition bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300">
+                  A1-A2
+                </button>
+                <button data-level="B1-B2" class="level-btn px-3 py-1 rounded-full text-xs sm:text-sm font-medium transition bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300">
+                  B1-B2
+                </button>
+                <button data-level="C" class="level-btn px-3 py-1 rounded-full text-xs sm:text-sm font-medium transition bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300">
+                  C (C1-C2)
+                </button>
+              </div>
+            </div>
+
+            <div id="resultSummary" class="text-xs text-slate-400 ml-auto">
+              等待输入文本
+            </div>
+          </div>
+        </div>
+
+        <!-- 骨架屏加载状态 -->
+        <div id="loadingSkeleton" class="hidden space-y-4">
+          <div class="bg-white dark:bg-slate-900 rounded-2xl p-5 border border-slate-200 dark:border-slate-800 animate-pulse space-y-3">
+            <div class="h-5 bg-slate-200 dark:bg-slate-800 rounded w-1/3"></div>
+            <div class="h-4 bg-slate-200 dark:bg-slate-800 rounded w-2/3"></div>
+            <div class="h-16 bg-slate-100 dark:bg-slate-800/60 rounded-xl w-full"></div>
+          </div>
+          <div class="bg-white dark:bg-slate-900 rounded-2xl p-5 border border-slate-200 dark:border-slate-800 animate-pulse space-y-3">
+            <div class="h-5 bg-slate-200 dark:bg-slate-800 rounded w-1/4"></div>
+            <div class="h-4 bg-slate-200 dark:bg-slate-800 rounded w-1/2"></div>
+            <div class="h-16 bg-slate-100 dark:bg-slate-800/60 rounded-xl w-full"></div>
+          </div>
+        </div>
+
+        <!-- 空状态引导 -->
+        <div id="emptyState" class="bg-white dark:bg-slate-900 rounded-2xl border border-dashed border-slate-300 dark:border-slate-800 p-8 sm:p-12 text-center">
+          <div class="w-14 h-14 mx-auto mb-3 rounded-2xl bg-brand-50 dark:bg-brand-500/10 flex items-center justify-center text-2xl">
+            🇩🇪
+          </div>
+          <h3 class="font-semibold text-base sm:text-lg mb-1">把德语段落放进左侧框里吧</h3>
+          <p class="text-sm text-slate-500 dark:text-slate-400 max-w-md mx-auto">
+            点击【学习词汇】，自动还原词形与可分动词，列出中文释义、高频固定搭配、简明例句，并支持按 CEFR 等级筛选与德语语音朗读。
+          </p>
+        </div>
+
+        <!-- 词汇卡片渲染容器 -->
+        <div id="vocabList" class="space-y-4"></div>
+      </section>
+
+    </div>
+  </main>
+
+  <!-- 抽屉：我的生词本 -->
+  <div id="vocabBookDrawer" class="fixed inset-0 z-50 hidden">
+    <div id="vocabBookBackdrop" class="absolute inset-0 bg-slate-900/50 backdrop-blur-xs"></div>
+    <aside class="absolute right-0 top-0 bottom-0 w-full max-w-md bg-white dark:bg-slate-900 shadow-2xl flex flex-col">
+      <div class="p-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+        <div>
+          <h3 class="font-bold text-base">⭐ 我的生词本</h3>
+          <p class="text-xs text-slate-500 dark:text-slate-400">保存在当前浏览器本地，支持导出复习</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="exportCsvBtn" class="px-3 py-1.5 rounded-lg text-xs font-medium bg-brand-50 text-brand-600 hover:bg-brand-100 dark:bg-brand-500/15 dark:text-brand-100 transition">
+            导出 CSV
+          </button>
+          <button id="closeVocabBookBtn" class="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500">✕</button>
+        </div>
+      </div>
+      <div id="vocabBookList" class="flex-1 overflow-y-auto p-4 space-y-3"></div>
+    </aside>
+  </div>
+
+  <!-- 弹窗：API 设置（仅纯静态部署或自定义时使用） -->
+  <div id="settingsModal" class="fixed inset-0 z-50 hidden flex items-center justify-center p-4">
+    <div id="settingsBackdrop" class="absolute inset-0 bg-slate-900/50 backdrop-blur-xs"></div>
+    <div class="relative w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 p-5 space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 class="font-bold text-base">⚙️ 接口设置（可选）</h3>
+        <button id="closeSettingsBtn" class="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500">✕</button>
+      </div>
+      <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+        如果你部署在已配置环境变量的 <strong>Cloudflare Pages</strong> 上，留空即可直接使用。若部署在纯静态 <strong>GitHub Pages</strong>，可在此填入你自己的免费 API Key（仅存在本地浏览器中）。
+      </p>
+
+      <div class="space-y-3 text-sm">
+        <div>
+          <label class="block text-xs font-medium mb-1 text-slate-600 dark:text-slate-300">接口模式</label>
+          <select id="settingProvider" class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-sm">
+            <option value="server">优先使用站点后台接口（Cloudflare 默认）</option>
+            <option value="gemini">浏览器直连：Google Gemini（免费版）</option>
+            <option value="openai">浏览器直连：DeepSeek / OpenAI 兼容接口</option>
+          </select>
+        </div>
+
+        <div id="customApiFields" class="hidden space-y-3">
+          <div id="openaiBaseUrlWrap" class="hidden">
+            <label class="block text-xs font-medium mb-1 text-slate-600 dark:text-slate-300">API Base URL</label>
+            <input id="settingBaseUrl" type="text" placeholder="https://api.deepseek.com/v1" class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium mb-1 text-slate-600 dark:text-slate-300">模型名称 (Model)</label>
+            <input id="settingModel" type="text" placeholder="gemini-2.5-flash 或 deepseek-chat" class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium mb-1 text-slate-600 dark:text-slate-300">API Key</label>
+            <input id="settingApiKey" type="password" placeholder="sk-... 或 AIza..." class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-sm" />
+          </div>
+        </div>
+      </div>
+
+      <div class="flex justify-end gap-2 pt-2">
+        <button id="saveSettingsBtn" class="px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-700 text-white text-sm font-medium transition">
+          保存设置
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
